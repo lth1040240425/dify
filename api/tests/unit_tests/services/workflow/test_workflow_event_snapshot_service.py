@@ -3,6 +3,7 @@ import queue
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from inspect import signature
 from itertools import cycle
 from threading import Event
 from types import SimpleNamespace
@@ -77,6 +78,10 @@ class _FakePauseEntity(WorkflowPauseEntity):
     @override
     def get_pause_reasons(self) -> Sequence[HumanInputRequired]:
         return self.pause_reasons
+
+
+def test_build_workflow_event_stream_defaults_to_twenty_minute_idle_timeout() -> None:
+    assert signature(build_workflow_event_stream).parameters["idle_timeout"].default == 1200
 
 
 def _build_workflow_run(status: WorkflowExecutionStatus) -> WorkflowRun:

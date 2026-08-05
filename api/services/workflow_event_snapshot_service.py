@@ -78,7 +78,7 @@ def build_workflow_event_stream(
     app_id: str,
     session_maker: sessionmaker[Session],
     human_input_surface: HumanInputSurface | None = None,
-    idle_timeout: float = 300,
+    idle_timeout: float = 1200,
     ping_interval: float = 10.0,
     close_on_pause: bool = True,
 ) -> Generator[Mapping[str, Any] | str, None, None]:
