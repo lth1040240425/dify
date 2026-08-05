@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from core.agent.base_agent_runner import BaseAgentRunner
 from core.agent.entities import AgentScratchpadUnit
 from core.agent.errors import AgentMaxIterationError
+from core.agent.llm_trace_hook import emit_llm_trace
 from core.agent.output_parser.cot_output_parser import CotAgentOutputParser
 from core.app.apps.base_app_queue_manager import PublishFrom
 from core.app.entities.queue_entities import QueueAgentThoughtEvent, QueueMessageEndEvent, QueueMessageFileEvent
@@ -135,15 +136,37 @@ class CotAgentRunner(BaseAgentRunner, ABC):
             session.close()
 
             # invoke model
-            chunks = model_instance.invoke_llm(
+            emit_llm_trace(
+                event="llm_request_start",
+                runner=self,
                 prompt_messages=prompt_messages,
                 model_parameters=app_generate_entity.model_conf.parameters,
                 tools=[],
                 stop=app_generate_entity.model_conf.stop,
-                stream=True,
-                callbacks=[],
-                request_metadata={"app_id": self.app_config.app_id},
+                iteration_step=iteration_step,
             )
+            try:
+                chunks = model_instance.invoke_llm(
+                    prompt_messages=prompt_messages,
+                    model_parameters=app_generate_entity.model_conf.parameters,
+                    tools=[],
+                    stop=app_generate_entity.model_conf.stop,
+                    stream=True,
+                    callbacks=[],
+                    request_metadata={"app_id": self.app_config.app_id},
+                )
+            except Exception as exc:
+                emit_llm_trace(
+                    event="llm_request_error",
+                    runner=self,
+                    prompt_messages=prompt_messages,
+                    model_parameters=app_generate_entity.model_conf.parameters,
+                    tools=[],
+                    stop=app_generate_entity.model_conf.stop,
+                    iteration_step=iteration_step,
+                    error=exc,
+                )
+                raise
 
             usage_dict: dict[str, LLMUsage | None] = {}
             react_chunks = CotAgentOutputParser.handle_react_stream_output(chunks, usage_dict)
@@ -196,6 +219,19 @@ class CotAgentRunner(BaseAgentRunner, ABC):
                     increase_usage(llm_usage, usage_dict["usage"])
             else:
                 usage_dict["usage"] = LLMUsage.empty_usage()
+
+            emit_llm_trace(
+                event="llm_request_end",
+                runner=self,
+                prompt_messages=prompt_messages,
+                model_parameters=app_generate_entity.model_conf.parameters,
+                tools=[],
+                stop=app_generate_entity.model_conf.stop,
+                iteration_step=iteration_step,
+                response=scratchpad.agent_response or "",
+                usage=usage_dict["usage"],
+                tool_calls=[scratchpad.action] if scratchpad.action else [],
+            )
 
             self.save_agent_thought(
                 agent_thought_id=agent_thought_id,

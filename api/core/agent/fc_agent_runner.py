@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from core.agent.base_agent_runner import BaseAgentRunner
 from core.agent.errors import AgentMaxIterationError
+from core.agent.llm_trace_hook import emit_llm_trace
 from core.app.apps.base_app_queue_manager import PublishFrom
 from core.app.entities.queue_entities import QueueAgentThoughtEvent, QueueMessageEndEvent, QueueMessageFileEvent
 from core.prompt.agent_history_prompt_transform import AgentHistoryPromptTransform
@@ -103,15 +104,37 @@ class FunctionCallAgentRunner(BaseAgentRunner):
             session.close()
 
             # invoke model
-            chunks: Union[Generator[LLMResultChunk, None, None], LLMResult] = model_instance.invoke_llm(
+            emit_llm_trace(
+                event="llm_request_start",
+                runner=self,
                 prompt_messages=prompt_messages,
                 model_parameters=app_generate_entity.model_conf.parameters,
                 tools=prompt_messages_tools,
                 stop=app_generate_entity.model_conf.stop,
-                stream=self.stream_tool_call,
-                callbacks=[],
-                request_metadata={"app_id": self.app_config.app_id},
+                iteration_step=iteration_step,
             )
+            try:
+                chunks: Union[Generator[LLMResultChunk, None, None], LLMResult] = model_instance.invoke_llm(
+                    prompt_messages=prompt_messages,
+                    model_parameters=app_generate_entity.model_conf.parameters,
+                    tools=prompt_messages_tools,
+                    stop=app_generate_entity.model_conf.stop,
+                    stream=self.stream_tool_call,
+                    callbacks=[],
+                    request_metadata={"app_id": self.app_config.app_id},
+                )
+            except Exception as exc:
+                emit_llm_trace(
+                    event="llm_request_error",
+                    runner=self,
+                    prompt_messages=prompt_messages,
+                    model_parameters=app_generate_entity.model_conf.parameters,
+                    tools=prompt_messages_tools,
+                    stop=app_generate_entity.model_conf.stop,
+                    iteration_step=iteration_step,
+                    error=exc,
+                )
+                raise
 
             tool_calls: list[tuple[str, str, dict[str, Any]]] = []
 
@@ -215,6 +238,19 @@ class FunctionCallAgentRunner(BaseAgentRunner):
                 ]
 
             self._current_thoughts.append(assistant_message)
+
+            emit_llm_trace(
+                event="llm_request_end",
+                runner=self,
+                prompt_messages=prompt_messages,
+                model_parameters=app_generate_entity.model_conf.parameters,
+                tools=prompt_messages_tools,
+                stop=app_generate_entity.model_conf.stop,
+                iteration_step=iteration_step,
+                response=response,
+                usage=current_llm_usage,
+                tool_calls=tool_calls,
+            )
 
             # save thought
             self.save_agent_thought(
