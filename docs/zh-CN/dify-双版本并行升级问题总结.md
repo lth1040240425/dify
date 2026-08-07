@@ -46,6 +46,19 @@ WEAVIATE_ENDPOINT=http://weaviate:8080
 
 独立 PostgreSQL 已映射到 `192.168.40.6:5432`。DataGrip 使用数据库 `dify`；PostgreSQL 角色 `shuhang` 为只读角色，只允许连接数据库、使用 `public` schema 和查询现有/后续表及序列，不具备写入、建库、建角色或超级用户权限。文档不记录其密码。
 
+### 1.4 必须保留的现场约定与备份
+
+| 项目 | 位置/约定 |
+|---|---|
+| 新版环境备份 | `/root/dify-company-1.16.1/.env.bak-before-independent-db-rename-20260807`、`.env.bak-before-redis-alias-20260807` |
+| 新版 Compose 备份 | `/root/dify-company-1.16.1/docker-compose.yaml.bak-before-redis-network-20260807` |
+| 独立中间件 Compose 备份 | `/opt/dify-infra/docker-compose.yaml.bak-before-lan-5432-20260807` |
+| 最终数据库 dump | `/opt/dify-infra/final-sync-20260807/` |
+| 网关配置 | `/root/dify-edge-gateway/nginx.conf` |
+| 网关/iptables 历史备份 | `/etc/sysconfig/iptables.bak-20260806-edge-gateway` |
+
+备份目录和配置文件中的密钥不得复制到 Git、工单或聊天记录。执行清理前必须先确认这些备份仍可读取，并重新生成 SHA-256 校验清单。
+
 ## 2. 数据迁移结果
 
 ### 2.1 PostgreSQL
@@ -87,6 +100,7 @@ dify_plugin_pre_cutover_20260807
 | 新版工作流 `Stopped`、`0 Tokens` | Worker 无法解析或访问 `db_postgres` | 将 API、Worker、Beat 加入正确数据库网络并验证 DNS |
 | 插件管理接口 `401/500` | API 访问到错误 Plugin Daemon，或 Plugin Daemon 缺少插件数据库网络/别名 | 隔离插件网络，保证 `db_postgres` 别名和内部认证匹配 |
 | 新版仍访问旧 Redis | `REDIS_HOST=redis` 命中新版默认网络中的内置 Redis | 改为 `dify-infra-redis`，并将 Plugin Daemon 加入独立 Redis 网络 |
+| 旧版页面服务端请求 `localhost` | 旧版 `.env` 的 `CONSOLE_API_URL`、`APP_API_URL` 为空，SSR 回退到容器内 localhost | 并行期显式配置旧版入口地址；不要用新版地址覆盖旧版配置 |
 | 页面持续加载 | 后端 API、Provider 或插件请求失败；不是单纯前端问题 | 先查浏览器失败请求，再结合 API/Plugin/Worker 日志定位 |
 | 新旧版互相跳登录 | 浏览器 Cookie 不区分端口，相同 IP 下 Token Cookie 被覆盖 | 并行期使用不同主机名/浏览器配置；旧版下线后该冲突消失 |
 | 部分网段 Ping、SSH、HTTP 超时 | Docker 自动分配的 bridge 子网与办公网/VPN 路由重叠 | 删除冲突网络并为 Compose 显式分配已核对的子网 |
@@ -134,6 +148,8 @@ dify_plugin_pre_cutover_20260807
 - 是否残留旧版 DNAT 或 FORWARD 规则；
 - 重启 Docker/服务器后的恢复行为。
 
+历史切换期间确认需要访问入口的来源包括 `192.168.40.0/24`、`192.168.10.0/24`、`172.21.0.0/16`、`172.23.0.0/16` 和 `172.28.0.0/16`。这不是永久白名单；每次变更前必须以当前调用方清单和运行态规则重新核对，不能照抄旧规则。
+
 禁止根据单张 `iptables -L` 截图直接删除规则。任何网络改动应先备份、说明回滚命令并获得负责人确认。
 
 ## 6. 旧版下线与遗留资源
@@ -147,6 +163,12 @@ dify_plugin_pre_cutover_20260807
 3. 新版 Compose 中的内置 Redis 容器不再是生产 Redis，但删除前仍需核对容器连接、环境变量和队列。
 4. 旧版数据在下线后不再接收新写入，不能把它视为随时可无损切回的实时副本。
 5. 禁止执行 `docker system prune -a --volumes`；只能在挂载和依赖盘点后逐项清理。
+
+容易误删的共享资源：
+
+- `/opt/dify/docker/volumes/plugin_daemon` 仍被新版 Plugin Daemon 挂载，不能随旧版目录整体删除。
+- PostgreSQL、Redis、Weaviate、Nginx 基础镜像可能被新版或独立中间件复用，不能按名称批量删除。
+- 独立 PostgreSQL 的 `5432` 现在服务于 `dify`，不是旧版数据库；删除旧版容器时必须先确认端口归属。
 
 建议至少经过一个完整业务观察周期，再归档配置和备份、删除旧版专属镜像及数据。清理后必须重新验证网关、登录、工作空间、工作流、插件和知识库。
 

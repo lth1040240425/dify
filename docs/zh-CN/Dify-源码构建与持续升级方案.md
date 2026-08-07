@@ -23,6 +23,20 @@
 5. 测试环境与生产环境使用不同的 Compose 项目名、端口、网络、数据库和数据目录。
 6. 生产变更前先做只读检查，说明影响和回滚方式，并获得负责人确认。
 
+### 1.1 固定目录与发布证据
+
+| 用途 | 路径/要求 |
+|---|---|
+| Dify Core Fork | `D:\CodexProjects\dify\core` |
+| 插件源码与上游基线 | `D:\CodexProjects\dify\plugins` |
+| 本机构建产物 | `D:\WSL\dify-artifacts\<release>` |
+| 当前新版 Compose | `/root/dify-company-1.16.1` |
+| 独立中间件 Compose | `/opt/dify-infra` |
+| 前置网关 | `/root/dify-edge-gateway` |
+| 发布备份 | 使用带版本和时间的独立目录，禁止覆盖上一版 |
+
+每个发布必须能够追溯到以下证据：Git commit、官方 Tag、公司发布 Tag、镜像 digest、Compose 差异、数据库迁移 revision、插件版本及包 hash、网络分配、备份校验值、验收结果和回滚负责人。缺少其中任一关键项时不得进入生产切换。
+
 ## 2. Git 分支与版本升级
 
 `company` 是长期维护分支，每次发布创建不可移动的发布标签，例如 `release/1.16.2-company.0`。
@@ -53,11 +67,12 @@ git push origin company release/1.16.2-company.0
 
 ### 3.1 Dify Core 定制
 
-| 定制 | 维护要求 | 最小验收 |
+| 定制文件/能力 | 维护要求 | 最小验收 |
 |---|---|---|
-| Agent runner trace | 保持为可配置扩展，失败不能阻断主请求 | AgentChat、CoT、工具循环 trace 不重不漏 |
-| `llm_trace_hook.py` | 对敏感字段脱敏，Kafka 异常可降级 | API 与 Worker 路径均验证 |
-| Workflow SSE 空闲超时 | 随上游事件协议变化重新审阅 | 长工作流、断线重连和超时验证 |
+| `core/agent/fc_agent_runner.py` | 保留函数调用 Agent trace 逻辑 | AgentChat 工具调用产生一次完整 trace |
+| `core/agent/cot_agent_runner.py` | 保留 CoT/工具循环 trace 逻辑 | 多轮工具循环 trace 不重不漏 |
+| `core/agent/llm_trace_hook.py` | 可配置、敏感字段脱敏、Kafka 异常可降级 | API 与 Worker 路径均验证 |
+| `services/workflow_event_snapshot_service.py` | 随上游 SSE 事件协议重新审阅空闲超时 | 长工作流、断线重连和超时验证 |
 
 旧版本文件只能用于理解业务意图，禁止直接覆盖新版同名文件。升级时应基于目标版本源码重新移植最小差异。
 
@@ -70,6 +85,13 @@ Anthropic、Moonshot 等插件不属于 Dify Core Fork。插件定制应在独�
 - 可重放的 patch/overlay；
 - Provider 标识兼容性说明；
 - 凭据保存、模型列表、流式请求和工具调用测试结果。
+
+当前需要保留的现场基线：
+
+| 插件 | 基线版本 | 公司定制 | 升级风险 |
+|---|---:|---|---|
+| Anthropic | `0.3.25` | 自定义 Opus 4.8 模型参数、自适应推理及 cache token 链路 | 插件重装后 `@hash` 路径变化；不能依赖旧挂载路径 |
+| Moonshot | `0.1.11` | Kimi K3 凭据校验、`429 engine_overloaded` 有限退避 | 直接修改 volume 会在重装或升级时丢失 |
 
 不得把 Plugin Daemon 的运行目录、`@hash` 安装路径、`.venv`、API Key 或缓存提交到 Git。不要直接修改生产 volume；应生成可安装、可回滚的定制插件包。
 
@@ -182,7 +204,27 @@ sha256sum dify.dump dify_plugin.dump > SHA256SUMS
 
 观察期结束前不要删除旧 Compose、环境文件、数据库/向量备份和上一版镜像。禁止使用 `docker system prune -a --volumes` 做生产清理；应先盘点容器挂载和镜像引用，再逐项删除。
 
-## 10. 1.16.1 相对 1.14 的主要变化
+## 10. 易错项与硬约束
+
+| 易错点 | 必须遵守的约束 |
+|---|---|
+| Docker build context 选错 | API、Web、Agent Backend 都以仓库根目录为 build context，不能在子目录直接构建 |
+| 复制旧版 `.env`/Compose 覆盖新版 | 以目标版本示例为基线逐项合并业务值；保留新版服务和安全变量 |
+| Compose 项目名不一致 | 所有命令显式使用正确项目名；执行前先用 `docker compose ls`、`docker ps` 核对目标 |
+| 共享 `api`、`redis`、`db_postgres` 等别名 | 只有同一设计边界内的服务才能共享网络；新旧栈必须隔离 |
+| `REDIS_HOST=redis` 命中错误容器 | 使用独立且唯一的网络别名，并在 API、Worker、Plugin Daemon 内分别验证解析结果 |
+| 认为 `pg_dump` 会备份数据库用户 | 数据库级 dump 不包含 PostgreSQL 全局角色；角色和授权需单独导出或重建 |
+| 只比较表数量 | 还要比较迁移 revision、关键表行数、租户成员关系并抽样业务对象 |
+| 在线复制 Weaviate 目录 | 热拷贝可能不一致；最终复制必须冻结写入或使用一致性快照 |
+| 直接复制 Redis 数据 | 旧缓存和 Celery/Kombu 队列可能不兼容；先排空队列，缓存优先重建 |
+| 直接修改 Plugin Daemon volume | `@hash` 路径随重装变化；定制必须生成可重放 patch 或安装包 |
+| 只用 IP 的不同端口隔离新旧登录 | Cookie 不区分端口；并行期必须使用不同主机名或浏览器配置 |
+| 让 Docker 自动分配网段 | 新建网络前核对真实路由并显式指定子网，避免覆盖办公网/VPN |
+| 为单个服务故障停止 Docker daemon | 只重建受影响的 Compose 服务；停止 Docker 会中断本机全部容器应用 |
+| 直接清理旧卷和镜像 | 先核对挂载和镜像引用，禁止 `docker system prune -a --volumes` |
+| 未经确认修改生产 | 停服、数据库、Compose、网络、防火墙和删除操作必须先说明影响与回滚并获得确认 |
+
+## 11. 1.16.1 相对 1.14 的主要变化
 
 | 方向 | 主要变化 |
 |---|---|
