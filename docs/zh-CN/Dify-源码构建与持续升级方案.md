@@ -29,11 +29,13 @@
 |---|---|
 | Dify Core Fork | `D:\CodexProjects\dify\core` |
 | 插件源码与上游基线 | `D:\CodexProjects\dify\plugins` |
-| 本机构建产物 | `D:\WSL\dify-artifacts\<release>` |
+| 本机构建产物 | 计划目录 `D:\WSL\dify-artifacts\<release>`；当前尚未创建 |
 | 当前新版 Compose | `/root/dify-company-1.16.1` |
 | 独立中间件 Compose | `/opt/dify-infra` |
 | 前置网关 | `/root/dify-edge-gateway` |
 | 发布备份 | 使用带版本和时间的独立目录，禁止覆盖上一版 |
+
+当前生产运行的是已完成迁移的 `1.16.1` 镜像；截至本文更新时，尚未在本机完成下一版公司镜像构建，因此 `D:\WSL\dify-artifacts` 不存在。后续首次构建时按版本创建该目录，不要把目录路径当作已有产物。
 
 每个发布必须能够追溯到以下证据：Git commit、官方 Tag、公司发布 Tag、镜像 digest、Compose 差异、数据库迁移 revision、插件版本及包 hash、网络分配、备份校验值、验收结果和回滚负责人。缺少其中任一关键项时不得进入生产切换。
 
