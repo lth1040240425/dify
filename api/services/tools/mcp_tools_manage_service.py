@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
@@ -32,6 +33,9 @@ UNCHANGED_SERVER_URL_PLACEHOLDER = "[__HIDDEN__]"
 CLIENT_NAME = "Dify"
 EMPTY_TOOLS_JSON = "[]"
 EMPTY_CREDENTIALS_JSON = "{}"
+DYNAMIC_REQUEST_HEADER_TEMPLATE_PATTERN = re.compile(
+    r"\{\{\s*request\.headers?\..+?\s*\}\}", re.IGNORECASE
+)
 
 
 class OAuthDataType(StrEnum):
@@ -319,8 +323,9 @@ class MCPToolManageService:
         if not provider_entity.authed:
             raise ValueError("Please auth the tool first")
 
-        # Prepare headers with auth token
-        headers = self._prepare_auth_headers(provider_entity)
+        # Tool discovery does not have an end-user request context. Do not send
+        # dynamic request header templates as empty or invalid auth headers.
+        headers = self._filter_dynamic_request_headers(self._prepare_auth_headers(provider_entity))
 
         # Retrieve tools from remote server
         server_url = provider_entity.decrypt_server_url()
@@ -486,6 +491,15 @@ class MCPToolManageService:
         if tokens:
             headers["Authorization"] = f"{tokens.token_type.capitalize()} {tokens.access_token}"
         return headers
+
+    @staticmethod
+    def _filter_dynamic_request_headers(headers: dict[str, str]) -> dict[str, str]:
+        """Exclude request-bound headers when discovering MCP tools."""
+        return {
+            name: value
+            for name, value in headers.items()
+            if not DYNAMIC_REQUEST_HEADER_TEMPLATE_PATTERN.search(value)
+        }
 
     def _retrieve_remote_mcp_tools(
         self,
